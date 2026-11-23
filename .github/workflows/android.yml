@@ -1,51 +1,83 @@
-
-name: JONAKI AI Android Build
+name: JONAKI AI APK Build
 
 on:
-  push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
   workflow_dispatch:
+  push:
+    branches: [main]
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: Build JONAKI AI APK
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-
-      - name: Check Project Files
+      - name: Find and Extract Android Project
+        id: project
+        shell: bash
         run: |
-          test -f settings.gradle
-          test -f build.gradle
-          test -f app/build.gradle
-          test -f app/src/main/AndroidManifest.xml
+          set -e
 
-      - name: Build Debug APK
-        run: gradle assembleDebug --no-daemon
+          mkdir -p extracted
+
+          while IFS= read -r -d '' zipfile; do
+            echo "Extracting $zipfile"
+            unzip -oq "$zipfile" -d extracted
+          done < <(find . -maxdepth 3 -type f -iname "*.zip" -print0)
+
+          PROJECT_FILE=$(find . \
+            -type f \
+            \( -name settings.gradle -o -name settings.gradle.kts \) \
+            ! -path './.git/*' \
+            ! -path './extracted/*' \
+            -print -quit)
+
+          if [ -z "$PROJECT_FILE" ]; then
+            PROJECT_FILE=$(find extracted \
+              -type f \
+              \( -name settings.gradle -o -name settings.gradle.kts \) \
+              -print -quit || true)
+          fi
+
+          if [ -z "$PROJECT_FILE" ]; then
+            echo "Android project settings file not found."
+            find . -maxdepth 5 -type f | head -100
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$(realpath "$PROJECT_FILE")")
+
+          echo "Android project: $PROJECT_DIR"
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Build APK
+        shell: bash
+        run: |
+          set -e
+          cd "${{ steps.project.outputs.project_dir }}"
+
+          if [ ! -d app/src/main ]; then
+            echo "Android app source folder missing."
+            exit 1
+          fi
+
+          gradle --no-daemon assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: JONAKI-AI-APK
-          path: app/build/outputs/apk/debug/*.apk
+          path: "**/build/outputs/apk/debug/*.apk"
           if-no-files-found: error
           retention-days: 7
           
